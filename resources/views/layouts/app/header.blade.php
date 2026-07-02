@@ -4,7 +4,7 @@
 <head>
     @include('partials.head')
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
-
+@vite(['resources/css/app.css', 'resources/js/app.js'])
 </head>
 
 <body class="min-h-screen bg-white dark:bg-zinc-800">
@@ -93,29 +93,9 @@
     @endpersist
 
     @fluxScripts
-    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    {{-- <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script> --}}
 
-    <script>
-        document.addEventListener("livewire:init", () => {
 
-            Livewire.hook('morph.updated', () => {
-
-                flatpickr("#start_date", {
-                    dateFormat: "Y-m-d",
-                    altInput: true,
-                    altFormat: "d/m/Y",
-                });
-
-                flatpickr("#end_date", {
-                    dateFormat: "Y-m-d",
-                    altInput: true,
-                    altFormat: "d/m/Y",
-                });
-
-            });
-
-        });
-    </script>
 
 </body>
 

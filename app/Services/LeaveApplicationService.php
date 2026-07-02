@@ -2,61 +2,94 @@
 
 namespace App\Services;
 
-use App\Models\ApprovalHistory;
 use App\Models\LeaveApplication;
 use App\Models\LeaveBalance;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class LeaveApplicationService
 {
     public function approve(LeaveApplication $application): LeaveApplication
     {
-        if (! in_array($application->status, ['pending', 'rejected'], true)) {
-            return $application;
-        }
+        return DB::transaction(function () use ($application): LeaveApplication {
+            $lockedApplication = LeaveApplication::query()->lockForUpdate()->findOrFail($application->id);
 
-        $balance = LeaveBalance::query()
-            ->where('user_id', $application->user_id)
-            ->where('leave_type_id', $application->leave_type_id)
-            ->first();
+            if (! in_array($lockedApplication->status, ['pending', 'rejected'], true)) {
+                return $lockedApplication;
+            }
 
-        if ($balance && in_array($application->status, ['pending', 'rejected'], true)) {
-            $balance->days_available = max(0, $balance->days_available - $application->days_requested);
-            $balance->days_used = $balance->days_used + $application->days_requested;
+            $balance = $this->lockedBalanceFor($lockedApplication);
+
+            if (! $balance || (float) $balance->days_available < (float) $lockedApplication->days_requested) {
+                throw ValidationException::withMessages([
+                    'approval' => 'This request cannot be approved because the employee has insufficient leave balance.',
+                ]);
+            }
+
+            $balance->days_available = (float) $balance->days_available - (float) $lockedApplication->days_requested;
+            $balance->days_used = (float) $balance->days_used + (float) $lockedApplication->days_requested;
             $balance->save();
-        }
 
-        $application->status = 'approved';
-        $application->approved_by = Auth::id();
-        $application->approved_at = now()->toDateTimeString();
-        $application->save();
+            $lockedApplication->status = 'approved';
+            $lockedApplication->approved_by = Auth::id();
+            $lockedApplication->approved_at = now();
+            $lockedApplication->save();
 
-        $application->histories()->create([
-            'actor_id' => Auth::id(),
-            'action' => 'approved',
-            'comments' => 'Approved by admin',
-        ]);
+            $lockedApplication->histories()->create([
+                'actor_id' => Auth::id(),
+                'action' => 'approved',
+                'comments' => 'Approved by admin',
+            ]);
 
-        return $application;
+            return $lockedApplication;
+        });
     }
 
     public function reject(LeaveApplication $application, ?string $comments = null): LeaveApplication
     {
-        if ($application->status === 'rejected') {
-            return $application;
-        }
+        return DB::transaction(function () use ($application, $comments): LeaveApplication {
+            $lockedApplication = LeaveApplication::query()->lockForUpdate()->findOrFail($application->id);
 
-        $application->status = 'rejected';
-        $application->approved_by = Auth::id();
-        $application->approved_at = now()->toDateTimeString();
-        $application->save();
+            if ($lockedApplication->status === 'rejected') {
+                return $lockedApplication;
+            }
 
-        $application->histories()->create([
-            'actor_id' => Auth::id(),
-            'action' => 'rejected',
-            'comments' => $comments,
-        ]);
+            if ($lockedApplication->status === 'approved') {
+                $balance = $this->lockedBalanceFor($lockedApplication);
 
-        return $application;
+                if (! $balance) {
+                    throw ValidationException::withMessages([
+                        'approval' => 'This approved request cannot be rejected because its leave balance record is missing.',
+                    ]);
+                }
+
+                $balance->days_available = (float) $balance->days_available + (float) $lockedApplication->days_requested;
+                $balance->days_used = max(0, (float) $balance->days_used - (float) $lockedApplication->days_requested);
+                $balance->save();
+            }
+
+            $lockedApplication->status = 'rejected';
+            $lockedApplication->approved_by = Auth::id();
+            $lockedApplication->approved_at = now();
+            $lockedApplication->save();
+
+            $lockedApplication->histories()->create([
+                'actor_id' => Auth::id(),
+                'action' => 'rejected',
+                'comments' => $comments,
+            ]);
+
+            return $lockedApplication;
+        });
+    }
+
+    private function lockedBalanceFor(LeaveApplication $application): ?LeaveBalance
+    {
+        return LeaveBalance::query()
+            ->where('user_id', $application->user_id)
+            ->where('leave_type_id', $application->leave_type_id)
+            ->lockForUpdate()
+            ->first();
     }
 }

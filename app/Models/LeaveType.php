@@ -11,6 +11,8 @@ class LeaveType extends Model
         'name',
         'code',
         'days_allowed',
+         'requires_attachment',
+        'minimum_notice_days',
         'requires_attachment',
         'description',
         'status',

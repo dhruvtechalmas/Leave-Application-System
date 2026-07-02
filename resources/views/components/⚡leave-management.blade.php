@@ -47,13 +47,20 @@ new class extends Component {
 
     public function updatedLeaveTypeId($value): void
     {
-        $leaveType = LeaveType::query()->find($value);
+        $leaveType = LeaveType::find($value);
+
         $this->requiresAttachment = (bool) $leaveType?->requires_attachment;
         $this->minimumNoticeDays = (int) ($leaveType?->minimum_notice_days ?? 0);
 
         if (!$this->requiresAttachment) {
             $this->attachment = null;
         }
+
+        // Clear previously selected dates
+        $this->startDate = null;
+        $this->endDate = null;
+        $this->startDateInput = '';
+        $this->endDateInput = '';
 
         $this->resetErrorBag();
     }
@@ -106,14 +113,15 @@ new class extends Component {
             return null;
         }
 
-        // Standard HTML5 input format (YYYY-MM-DD)
-        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) {
-            return $value;
+        try {
+            return \Carbon\Carbon::createFromFormat('d/m/Y', $value)
+                ->format('Y-m-d');
+        } catch (\Exception $e) {
         }
 
-        // Fallback if parsing regional strings
         try {
-            return \Carbon\Carbon::parse($value)->format('Y-m-d');
+            return \Carbon\Carbon::parse($value)
+                ->format('Y-m-d');
         } catch (\Exception $e) {
             return null;
         }
@@ -134,18 +142,15 @@ new class extends Component {
 
     public function getMinDateProperty(): string
     {
-        return now()->addDays(max($this->minimumNoticeDays))->toDateString();
+        return now()->addDays($this->minimumNoticeDays)->toDateString();
     }
 
     // In your Livewire Component class
-
-    public function getMinAllowedDateProperty()
+    public function getMinAllowedDateProperty(): string
     {
-        // Calculates the notice days (minimum 7)
-        $noticeDays = max(7, $this->minimumNoticeDays ?? 7);
-
-        // Returns the date in YYYY-MM-DD format for the HTML min attribute
-        return now()->addDays($noticeDays)->format('Y-m-d');
+        return now()
+            ->addDays($this->minimumNoticeDays)
+            ->format('Y-m-d');
     }
 
     public function loadData(): void
@@ -168,13 +173,34 @@ new class extends Component {
             'reason' => ['required', 'string', 'max:1000'],
             'attachment' => ['nullable', 'file', 'mimes:pdf,jpg,jpeg,png,doc,docx', 'max:2048'],
         ]);
+        // Check leave balance BEFORE saving
+        $balance = LeaveBalance::where('user_id', Auth::id())
+            ->where('leave_type_id', $this->leaveTypeId)
+            ->first();
 
+        if (!$balance) {
+            $this->addError('leaveTypeId', 'Leave balance not found.');
+            return;
+        }
+
+        if ((float) $this->daysRequested > (float) $balance->days_available) {
+
+            $this->addError(
+                'daysRequested',
+                "You only have {$balance->days_available} day(s) available."
+            );
+
+            return;
+        }
+
+        // Store attachment
         $attachmentPath = null;
 
         if ($this->requiresAttachment && $this->attachment) {
             $attachmentPath = $this->attachment->store('leave-attachments', 'public');
         }
 
+        // NOW create the request
         LeaveApplication::create([
             'user_id' => Auth::id(),
             'leave_type_id' => $this->leaveTypeId,
@@ -223,7 +249,7 @@ new class extends Component {
             <form wire:submit.prevent="submit" class="mt-4 space-y-4">
                 <div>
                     <label class="mb-1 block text-sm font-medium">Leave Type</label>
-                    <select wire:model="leaveTypeId" class="w-full rounded-md border px-3 py-2">
+                    <select wire:model.live="leaveTypeId" class="w-full rounded-md border px-3 py-2">
                         <option value="">Select a type</option>
                         @foreach ($leaveTypes as $type)
                             <option value="{{ $type->id }}">{{ $type->name }}</option>
@@ -241,21 +267,24 @@ new class extends Component {
                 <div class="grid gap-4 md:grid-cols-2">
                     <div>
                         <label class="mb-1 block text-sm font-medium">Start Date</label>
-                        <input id="start_date" type="date" wire:model.live.debounce.300ms="startDateInput"
-                            wire:key="start-date-input-field" min="{{ $this->minAllowedDate }}" autocomplete="off"
-                            inputmode="numeric" class="w-full rounded-md border px-3 py-2" required>
-                        <p class="mt-1 text-sm text-gray-500">Minimum notice period: {{ max(7, $minimumNoticeDays) }}
-                            days</p>
-                        </div>
-                    @if ($leaveMode === 'multiple_day')
+
+                        <input type="date" wire:model.live="startDateInput"
+                            min="{{ $this->minAllowedDate ?: $this->minAllowedDate}}"
+                            class="w-full rounded-md border px-3 py-2">
+
+                        <p class="mt-1 text-sm text-gray-500">
+                            Minimum notice period: {{ $minimumNoticeDays }} day(s)
+                        </p>
+                    </div>
+                    @if($leaveMode === 'multiple_day')
                         <div>
                             <label class="mb-1 block text-sm font-medium">End Date</label>
-                            <input id="end_date" type="date" wire:model.live.debounce.300ms="endDateInput" wire:key="end-date-input-field"
-                                min="{{ $startDateInput ?? $this->minAllowedDate }}" autocomplete="off" inputmode="numeric"
-                                class="w-full rounded-md border px-3 py-2" required>
+
+                            <input type="date" wire:model.live="endDateInput"
+                                min="{{ $startDateInput ?: $this->minAllowedDate }}"
+                                class="w-full rounded-md border px-3 py-2">
                         </div>
                     @endif
-
 
                 </div>
                 <div>
@@ -263,6 +292,9 @@ new class extends Component {
                     <input type="number" step="0.5" wire:model="daysRequested"
                         class="w-full rounded-md border px-3 py-2" required>
                 </div>
+                @error('daysRequested')
+                    <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+                @enderror
                 @if ($requiresAttachment)
                     <div wire:key="attachment-field-required">
                         <label class="mb-1 block text-sm font-medium">Attachment</label>
@@ -278,6 +310,7 @@ new class extends Component {
                     <textarea wire:model="reason" rows="3" class="w-full rounded-md border px-3 py-2"
                         required></textarea>
                 </div>
+
                 <button type="submit" class="rounded-md bg-blue-600 px-4 py-2 text-white">Submit Leave</button>
             </form>
         </div>
@@ -321,4 +354,25 @@ new class extends Component {
         </div>
     </div>
 </div>
+<script>
 
+    flatpickr('#start_date', {
+        dateFormat: 'Y-m-d',
+        altInput: true,
+        altFormat: 'd/m/Y',
+
+        onChange(selectedDates, dateStr) {
+            $wire.set('startDateInput', dateStr);
+        }
+    });
+
+    flatpickr('#end_date', {
+        dateFormat: 'Y-m-d',
+        altInput: true,
+        altFormat: 'd/m/Y',
+
+        onChange(selectedDates, dateStr) {
+            $wire.set('endDateInput', dateStr);
+        }
+    });
+</script>

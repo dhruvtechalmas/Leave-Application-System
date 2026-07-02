@@ -3,6 +3,7 @@
 use App\Models\LeaveBalance;
 use App\Models\LeaveType;
 use App\Models\User;
+use Illuminate\Validation\Rule;
 use Livewire\Component;
 
 new class extends Component
@@ -39,8 +40,16 @@ new class extends Component
     {
         $this->validate([
             'userId' => ['required', 'exists:users,id'],
-            'leaveTypeId' => ['required', 'exists:leave_types,id'],
+            'leaveTypeId' => [
+                'required',
+                'exists:leave_types,id',
+                Rule::unique('leave_balances', 'leave_type_id')
+                    ->where(fn ($query) => $query->where('user_id', $this->userId))
+                    ->ignore($this->editingId),
+            ],
             'daysAvailable' => ['required', 'numeric', 'min:0'],
+        ], [
+            'leaveTypeId.unique' => 'This user already has a balance for the selected leave type. Use Edit to change it.',
         ]);
 
         if ($this->editingId) {
@@ -111,6 +120,9 @@ new class extends Component
                         <option value="{{ $user['id'] }}">{{ $user['name'] }}</option>
                     @endforeach
                 </select>
+                @error('userId')
+                    <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+                @enderror
             </div>
             <div>
                 <label class="mb-1 block text-sm font-medium">Leave Type</label>
@@ -120,10 +132,16 @@ new class extends Component
                         <option value="{{ $type['id'] }}">{{ $type['name'] }}</option>
                     @endforeach
                 </select>
+                @error('leaveTypeId')
+                    <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+                @enderror
             </div>
             <div>
                 <label class="mb-1 block text-sm font-medium">Balance Days</label>
                 <input wire:model="daysAvailable" type="number" step="0.5" class="w-full rounded-md border px-3 py-2" placeholder="Enter balance days" />
+                @error('daysAvailable')
+                    <p class="mt-1 text-sm text-red-600">{{ $message }}</p>
+                @enderror
             </div>
             <div>
                 <label class="mb-1 block text-sm font-medium">Remarks</label>
